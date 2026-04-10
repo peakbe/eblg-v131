@@ -1,283 +1,97 @@
-// ======================================================
-// SONOMETERS — VERSION PRO+
-// Gestion markers, clusters, heatmap, historique, UI liste
-// ======================================================
+import { SONOMETERS } from "./config.js";
 
-import { SONOS, SONO_ADDRESSES } from "./config.js";
-import { haversineDistance } from "./helpers.js";
+const sonoList = document.getElementById("sono-list");
+const detailPanel = document.getElementById("detail-panel");
+const detailTitle = document.getElementById("detail-title");
+const detailAddress = document.getElementById("detail-address");
+const detailTown = document.getElementById("detail-town");
+const detailStatus = document.getElementById("detail-status");
+const detailDistance = document.getElementById("detail-distance");
 
+let mapRef = null;
 
-// ------------------------------------------------------
-// Logging PRO+
-// ------------------------------------------------------
-const IS_DEV = location.hostname.includes("localhost") || location.hostname.includes("127.0.0.1");
-const log = (...a) => IS_DEV && console.log("[SONO]", ...a);
-const logErr = (...a) => console.error("[SONO ERROR]", ...a);
-
-
-// ------------------------------------------------------
-// ÉTAT GLOBAL
-// ------------------------------------------------------
-export let sonometers = {};
-export let heatLayer = null;
-export let heatHistory = [];
-export const MAX_HISTORY = 50;
-
-export let clusterLayer = L.markerClusterGroup();
-
-
-// ======================================================
-// 1) UI — Surlignage dans la liste
-// ======================================================
-export function highlightSonometerInList(id) {
-    try {
-        const list = document.getElementById("sono-list");
-        if (!list) return;
-
-        list.querySelectorAll(".sono-item").forEach(el =>
-            el.classList.remove("sono-highlight")
-        );
-
-        const item = [...list.children].find(el => el.textContent.trim() === id);
-        if (item) {
-            item.classList.add("sono-highlight");
-            item.scrollIntoView({ behavior: "smooth", block: "center" });
-        }
-    } catch (err) {
-        logErr("Erreur highlightSonometerInList :", err);
-    }
-}
-
-
-// ======================================================
-// 1b) UI — Liste des sonomètres
-// ======================================================
-export function populateSonometerList() {
-    try {
-        const list = document.getElementById("sono-list");
-        if (!list) return;
-
-        list.innerHTML = "";
-
-        Object.keys(sonometers).forEach(id => {
-            const item = document.createElement("div");
-            item.className = "sono-item";
-            item.textContent = id;
-
-            item.onclick = () => {
-                highlightSonometerInList(id);
-                showDetailPanel(id, [50.64695, 5.44340]);
-            };
-
-            list.appendChild(item);
-        });
-
-        log("Liste sonomètres générée :", Object.keys(sonometers).length);
-
-    } catch (err) {
-        logErr("Erreur populateSonometerList :", err);
-    }
-}
-
-
-// ======================================================
-// 2) Heatmap dynamique
-// ======================================================
-export function updateHeatmap(map) {
-    try {
-        if (heatLayer) map.removeLayer(heatLayer);
-
-        const points = Object.values(sonometers).map(s => {
-            let weight = 0.2;
-            if (s.marker.options.color === "green") weight = 0.6;
-            if (s.marker.options.color === "red") weight = 1.0;
-            return [s.lat, s.lon, weight];
-        });
-
-        heatLayer = L.heatLayer(points, {
-            radius: 35,
-            blur: 25,
-            maxZoom: 12,
-            minOpacity: 0.3
-        }).addTo(map);
-
-    } catch (err) {
-        logErr("Erreur updateHeatmap :", err);
-    }
-}
-
-
-// ======================================================
-// 3) Panneau détail
-// ======================================================
-export function showDetailPanel(id, runwayStart) {
-    try {
-        const s = sonometers[id];
-        if (!s) return;
-
-        const panel = document.getElementById("detail-panel");
-        const title = document.getElementById("detail-title");
-        const address = document.getElementById("detail-address");
-        const town = document.getElementById("detail-town");
-        const status = document.getElementById("detail-status");
-        const distance = document.getElementById("detail-distance");
-
-        const fullAddress = SONO_ADDRESSES[id] || "Adresse inconnue";
-        const townName = fullAddress.split(",")[1] || "—";
-
-        const d = haversineDistance([s.lat, s.lon], runwayStart).toFixed(2);
-
-        title.textContent = id;
-        address.textContent = fullAddress;
-        town.textContent = townName.trim();
-        status.textContent = s.marker.options.color.toUpperCase();
-        distance.textContent = `${d} km`;
-
-        panel.classList.remove("hidden");
-
-    } catch (err) {
-        logErr("Erreur showDetailPanel :", err);
-    }
-}
-
-
-// ======================================================
-// 4) Historique Heatmap
-// ======================================================
-export function snapshotHeatmap() {
-    try {
-        const snapshot = Object.values(sonometers).map(s => ({
-            lat: s.lat,
-            lon: s.lon,
-            color: s.marker.options.color
-        }));
-
-        heatHistory.push(snapshot);
-        if (heatHistory.length > MAX_HISTORY) heatHistory.shift();
-
-    } catch (err) {
-        logErr("Erreur snapshotHeatmap :", err);
-    }
-}
-
-export async function playHeatmapHistory(map) {
-    try {
-        for (const snapshot of heatHistory) {
-            if (heatLayer) map.removeLayer(heatLayer);
-
-            const points = snapshot.map(s => {
-                let weight = 0.2;
-                if (s.color === "green") weight = 0.6;
-                if (s.color === "red") weight = 1.0;
-                return [s.lat, s.lon, weight];
-            });
-
-            heatLayer = L.heatLayer(points, {
-                radius: 35,
-                blur: 25,
-                maxZoom: 12,
-                minOpacity: 0.3
-            }).addTo(map);
-
-            await new Promise(r => setTimeout(r, 300));
-        }
-
-    } catch (err) {
-        logErr("Erreur playHeatmapHistory :", err);
-    }
-}
-
-
-// ======================================================
-// 5) Initialisation des sonomètres (clusters + markers)
-// ======================================================
+// Appelé depuis initMap()
 export function initSonometers(map) {
-    try {
-        SONOS.forEach(s => {
-            const marker = L.circleMarker([s.lat, s.lon], {
-                radius: 6,
-                color: "gray",
-                fillColor: "gray",
-                fillOpacity: 0.9,
-                weight: 1
-            });
+    mapRef = map;
 
-            clusterLayer.addLayer(marker);
-
-            marker.on("click", () => {
-                highlightSonometerInList(s.id);
-                showDetailPanel(s.id, [50.64695, 5.44340]);
-            });
-
-            sonometers[s.id] = { ...s, marker, status: "UNKNOWN" };
-        });
-
-        map.addLayer(clusterLayer);
-        log("Sonomètres initialisés :", SONOS.length);
-
-    } catch (err) {
-        logErr("Erreur initSonometers :", err);
-    }
+    renderSonoList();
+    renderSonoMarkers();
 }
 
+// ============================
+// 1) Sidebar list
+// ============================
 
-// ======================================================
-// 6) Bouton ON/OFF Heatmap
-// ======================================================
-export function initHeatmapToggle(map) {
-    try {
-        const btn = document.getElementById("toggle-heatmap");
-        if (!btn) return;
+function renderSonoList() {
+    sonoList.innerHTML = SONOMETERS.map(s => `
+        <div class="sono-item" data-id="${s.id}">
+            <b>${s.id}</b><br>
+            <span>${s.address}</span>
+        </div>
+    `).join("");
 
-        btn.onclick = () => {
-            if (map.hasLayer(heatLayer)) {
-                map.removeLayer(heatLayer);
-                btn.classList.add("off");
-            } else {
-                map.addLayer(heatLayer);
-                btn.classList.remove("off");
-            }
-        };
-
-        updateHeatmap(map);
-
-    } catch (err) {
-        logErr("Erreur initHeatmapToggle :", err);
-    }
+    document.querySelectorAll(".sono-item").forEach(item => {
+        item.addEventListener("click", () => {
+            const id = item.getAttribute("data-id");
+            const s = SONOMETERS.find(x => x.id === id);
+            if (s) showDetail(s);
+        });
+    });
 }
 
+// ============================
+// 2) Markers sur la carte
+// ============================
 
-// ======================================================
-// 7) Heatmap dynamique basée sur le vent
-// ======================================================
-export function updateHeatmapDynamic(map, windDir, windSpeed, runwayHeading) {
-    try {
-        if (heatLayer) map.removeLayer(heatLayer);
+function renderSonoMarkers() {
+    SONOMETERS.forEach(s => {
+        const marker = L.marker([s.lat, s.lon]).addTo(mapRef);
 
-        const diff = Math.abs(windDir - runwayHeading);
-        const angle = Math.min(diff, 360 - diff);
+        marker.bindPopup(`
+            <b>${s.id}</b><br>
+            ${s.address}
+        `);
 
-        const windFactor = Math.min(windSpeed / 20, 1);
-        const crossFactor = Math.sin(angle * Math.PI / 180);
+        marker.on("click", () => showDetail(s));
+    });
+}
 
-        const radius = 35 + windFactor * 20 + crossFactor * 10;
-        const blur = 25 + windFactor * 15;
+// ============================
+// 3) Panneau détail
+// ============================
 
-        const points = Object.values(sonometers).map(s => {
-            let weight = 0.2;
-            if (s.marker.options.color === "green") weight = 0.6;
-            if (s.marker.options.color === "red") weight = 1.0;
-            return [s.lat, s.lon, weight];
-        });
+function showDetail(s) {
+    detailTitle.textContent = s.id;
+    detailAddress.textContent = s.address;
 
-        heatLayer = L.heatLayer(points, {
-            radius,
-            blur,
-            maxZoom: 12,
-            minOpacity: 0.3
-        }).addTo(map);
+    // Extraction commune (simple split)
+    detailTown.textContent = s.address.split(",").pop().trim();
 
-    } catch (err) {
-        logErr("Erreur updateHeatmapDynamic :", err);
-    }
+    detailStatus.textContent = "Actif";
+
+    // Distance piste (EBLG 05 threshold)
+    const runway05 = { lat: 50.6375, lon: 5.4431 };
+
+    const d = haversine(s.lat, s.lon, runway05.lat, runway05.lon);
+    detailDistance.textContent = d.toFixed(2) + " km";
+
+    detailPanel.classList.remove("hidden");
+}
+
+// ============================
+// 4) Haversine (distance km)
+// ============================
+
+function haversine(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI/180;
+    const dLon = (lon2 - lon1) * Math.PI/180;
+
+    const a =
+        Math.sin(dLat/2)**2 +
+        Math.cos(lat1*Math.PI/180) *
+        Math.cos(lat2*Math.PI/180) *
+        Math.sin(dLon/2)**2;
+
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
